@@ -5,13 +5,29 @@ image:
 
 auth:
   enabled: true
-  # Inline password for the rendered Secret. Leave empty when using
-  # existingSecret instead.
+  # Inline password for the rendered Secret. Leave empty to let the
+  # PreSync hook generate one (see generateIfMissing).
   password: ""
-  # Name of an externally-managed Secret holding the password.
-  # When set, the chart skips rendering its own Secret.
+  # Name of an externally-managed Secret holding the password. When set,
+  # the chart skips rendering its own Secret and skips the bootstrap hook.
   existingSecret: ""
   existingSecretPasswordKey: password
+  # When true (default), and neither password nor existingSecret is set,
+  # a PreSync hook bootstraps a Secret with a random 32-char password on
+  # first install. The hook is idempotent — once the Secret exists, it
+  # no-ops. Disable if you're wiring the Secret via a secrets pipeline
+  # (sealed-secrets, ESO, etc.) but still want the chart's templated
+  # Secret skipped — in that case also set existingSecret.
+  generateIfMissing: true
+
+authBootstrapHook:
+  image:
+    repository: alpine/k8s
+    # Pin to a recent kubectl-bearing image. The hook just runs
+    # `kubectl get` and `kubectl create secret`; any tag with kubectl
+    # and a POSIX shell works.
+    tag: "1.30.0"
+    pullPolicy: IfNotPresent
 
 persistence:
   # Leave empty to use the cluster's default StorageClass.
