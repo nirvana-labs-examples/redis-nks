@@ -78,9 +78,10 @@ flowchart LR
    terraform apply
    ```
 
-5. **Test the connection** — `terraform output` prints a one-liner that spins up an ephemeral `redis-cli` pod and PINGs the server:
+5. **Test the connection** — point `kubectl` at the kubeconfig the second apply wrote, then run the one-liner `terraform output` prints to spin up an ephemeral `redis-cli` pod and PING the server:
 
    ```bash
+   export KUBECONFIG=$(terraform output -raw kubeconfig_path)
    eval "$(terraform output -raw redis_test_cmd)"
    # expect: PONG
    ```
