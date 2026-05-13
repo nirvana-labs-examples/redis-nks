@@ -1,0 +1,109 @@
+{{- if and .Values.auth.enabled (eq .Values.auth.existingSecret "") (eq .Values.auth.password "") .Values.auth.generateIfMissing }}
+# PreSync hook: bootstraps the Redis auth Secret with a random password if it
+# doesn't already exist. Generation runs at apply time inside the pod (not at
+# template time), so ArgoCD's repeated `helm template` doesn't regenerate the
+# password each sync — the hook idempotently no-ops once the Secret exists.
+#
+# Dual-annotated for ArgoCD (`argocd.argoproj.io/hook: PreSync`) and Helm
+# (`helm.sh/hook: pre-install`) so the same template works under
+# `terraform apply` → `helm_release`, manual `helm install`, and ArgoCD-managed
+# sync. ArgoCD ignores `helm.sh/hook`; Helm ignores `argocd.argoproj.io/hook`.
+#
+# Bypass the hook by setting `auth.existingSecret` (use a pre-created Secret
+# from your secrets pipeline — sealed-secrets, ESO, etc.) or by setting
+# `auth.password` directly (rendered into the Secret at template time).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-auth-bootstrap
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "0"
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "0"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-auth-bootstrap
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "0"
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "0"
+rules:
+  # `get` is scoped to the target Secret name; `create` is on the collection
+  # because resourceNames is ignored for collection verbs (Kubernetes RBAC
+  # spec). The Job's pod runs once per install and the SA has no other use.
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ .Release.Name }}-auth]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-auth-bootstrap
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "0"
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "0"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-auth-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-auth-bootstrap
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-auth-bootstrap
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    # sync-wave 1 lands after the SA/Role/RoleBinding (wave 0) so the Job's
+    # pod has its binding ready before kubectl starts.
+    argocd.argoproj.io/sync-wave: "1"
+    # BeforeHookCreation: a stuck/failed Job from a prior sync would otherwise
+    # block the next sync (Job spec is immutable → name collision on re-create).
+    # HookSucceeded: clean up the Job + pod promptly once it returns 0.
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      serviceAccountName: {{ .Release.Name }}-auth-bootstrap
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: "{{ .Values.authBootstrapHook.image.repository }}:{{ .Values.authBootstrapHook.image.tag }}"
+          imagePullPolicy: {{ .Values.authBootstrapHook.image.pullPolicy }}
+          command: [sh, -c]
+          args:
+            - |
+              set -eu
+              SECRET={{ .Release.Name }}-auth
+              NS={{ .Release.Namespace }}
+              if kubectl -n "$NS" get secret "$SECRET" >/dev/null 2>&1; then
+                echo "Secret $NS/$SECRET already exists; nothing to do"
+                exit 0
+              fi
+              PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+              kubectl -n "$NS" create secret generic "$SECRET" \
+                --from-literal=password="$PASSWORD"
+              echo "Created Secret $NS/$SECRET"
+{{- end }}

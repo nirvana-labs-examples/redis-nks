@@ -78,9 +78,10 @@ flowchart LR
    terraform apply
    ```
 
-5. **Test the connection** — `terraform output` prints a one-liner that spins up an ephemeral `redis-cli` pod and PINGs the server:
+5. **Test the connection** — point `kubectl` at the kubeconfig the second apply wrote, then run the one-liner `terraform output` prints to spin up an ephemeral `redis-cli` pod and PING the server:
 
    ```bash
+   export KUBECONFIG=$(terraform output -raw kubeconfig_path)
    eval "$(terraform output -raw redis_test_cmd)"
    # expect: PONG
    ```
@@ -119,14 +120,17 @@ Redis on Kubernetes is provider-agnostic. Pick any non-Bitnami upstream chart yo
 If you already followed [nirvana-labs-examples/argocd-gitops-nks](https://github.com/nirvana-labs-examples/argocd-gitops-nks), adding Redis is a copy-and-push:
 
 1. Copy `redis/` from this repo into `argocd/redis/` in your argocd-gitops-nks fork.
-2. Pre-create the auth Secret in the `redis` namespace (or wire it via your secrets pipeline — sealed-secrets, ESO, etc.). Then set `auth.existingSecret: redis-auth` in `argocd/redis/values.yaml`.
-3. Commit and push.
+2. Commit and push.
+
+The chart ships with a PreSync hook that generates a 32-character random password and creates the `redis-auth` Secret on first sync if neither `auth.password` nor `auth.existingSecret` is set — so no out-of-band Secret wiring is required. If you'd rather supply the Secret yourself (sealed-secrets, ESO, etc.), pre-create it with key `password` in the `redis` namespace and set `auth.existingSecret: redis-auth` in `argocd/redis/values.yaml`; the hook detects the existing Secret and no-ops.
 
 The `workloads` ApplicationSet in argocd-gitops-nks auto-discovers the new directory and generates an `Application` for it within ~3 minutes (or trigger immediately by patching the AppSet with an `argocd.argoproj.io/refresh: now` annotation).
 
 ## Going further
 
-- **HA**: Sentinel / Redis Cluster — see [Redis Sentinel](https://redis.io/docs/management/sentinel/) and [Redis Cluster](https://redis.io/docs/management/scaling/) docs. The OT redis-operator linked above implements both via CRDs.
+- **HA**: Sentinel / Redis Cluster — see [Redis Sentinel](https://redis.io/docs/management/sentinel/) and [Redis Cluster](https://redis.io/docs/management/scaling/) docs. Two ready-made chart paths to a production-shaped deployment:
+  - [DandyDeveloper redis-ha](https://github.com/DandyDeveloper/charts/tree/master/charts/redis-ha) — Sentinel-based HA chart used by the upstream argo-cd chart when HA mode is enabled. Switching from this repo's single-instance starter is a chart swap (replace the `redis/` directory contents) plus a `values.yaml` rewrite — its schema is different from ours (`replicas`, `haproxy`, separate auth/persistence nesting). The connection model also changes: clients become Sentinel-aware, or front the cluster with the chart's optional HAProxy.
+  - [OT redis-operator](https://ot-container-kit.github.io/redis-operator/) — operator + CRDs for standalone, replication, Sentinel, and Cluster modes.
 - **TLS on the wire**: Redis 6+ supports TLS natively — see [Redis TLS docs](https://redis.io/docs/management/security/encryption/).
 - **Backups**: Redis writes RDB/AOF to the PVC. Snapshot the PVC via your storage backend or copy the dump file out of the pod.
 
